@@ -311,10 +311,15 @@
             document.body.classList.add('viewing-mode');
             flashAIDot({ displayMs: 2000 });
             if (hasImagery) {
-                memoryHeadingImageActive = true;
-                updateMemoryHeadingPlacement();
-                const headingAutoHide = (promptText || '').toUpperCase().includes('THIS IS YOUR MEMORY') ? 2000 : 4200;
-                showMemoryHeading(promptText, { autoHideMs: headingAutoHide });
+                const promptIsFinal = (promptText || '').toUpperCase().includes('THIS IS YOUR MEMORY');
+                if (!promptIsFinal) {
+                    memoryHeadingImageActive = true;
+                    updateMemoryHeadingPlacement();
+                    showMemoryHeading(promptText, { autoHideMs: 4200 });
+                } else {
+                    memoryHeadingImageActive = false;
+                    hideMemoryHeading();
+                }
             } else {
                 hideMemoryHeading();
             }
