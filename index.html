@@ -1,0 +1,1382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MEMORIA</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="top-bar">
+        <div class="top-nav">
+            <span class="active">MEMORIA</span>
+        </div>
+        <div class="status-btn reset-btn" onclick="location.reload()">↺ RESET</div>
+    </div>
+   
+    <div id="particle-stage">
+        <canvas id="particle-canvas"></canvas>
+    </div>
+
+    <div id="ui-layer">
+        <div id="console">
+            <div class="ai-dot" id="ai-agent" onclick="startExperience()"></div>
+            <div id="system-prompt">Touch Dot to Connect</div>
+            <div id="transcript-box"></div>
+        </div>
+
+        <div id="memory-heading" class="hidden"></div>
+        
+        <div id="image-container">
+            <div id="choice-a" class="memory-card" data-variant="a" onclick="finalizeMemory('a')">
+                <canvas class="memory-card-canvas" aria-hidden="true"></canvas>
+                <div class="memory-card-status" aria-hidden="true"></div>
+            </div>
+            <div id="choice-b" class="memory-card" data-variant="b" onclick="finalizeMemory('b')">
+                <canvas class="memory-card-canvas" aria-hidden="true"></canvas>
+                <div class="memory-card-status" aria-hidden="true"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="association-layer"></div>
+
+    <script>
+        // ======================================================
+        // FILE CONFIGURATION
+        // ======================================================
+        const MEMORY_ASSETS = {
+            1: { 
+                audio: "oceanwaves.mp4", 
+                a: "ocean.png", 
+                b: "sunset.png",
+                 glowColor: '#D9A5FF',
+                 particleColor: 'rgba(217,165,255,0.85)',
+                 shapes: { a: 'circle', b: 'circle' }
+            },
+            2: { 
+                audio: "seagull.mp3", 
+                a: "tree.png", 
+                b: "cheer.png",
+                 glowColor: '#D9A5FF',
+                 particleColor: 'rgba(217,165,255,0.85)',
+                 shapes: { a: 'circle', b: 'circle' }
+                
+            },
+            3: { 
+                audio: "oceanfinal.mp3", 
+                a: "Final.png", 
+                b: null,
+                 glowColor: '#D9A5FF',
+                 particleColor: 'rgba(217,165,255,0.85)',
+                 shapes: { a: 'circle', b: 'circle' },
+                 layout: 'single',
+                 prompt: 'THIS IS YOUR MEMORY'
+            }
+        };
+
+        // --- TIMING CONFIG ---
+        const RECALL_WAIT_MS = 11000;
+        const SCENT_WAIT_MS = 11000;
+        const GEN_WAIT_MS = 11000;   
+        const POST_SELECTION_WAIT_MS = 8000;
+        const REFLECTION_WAIT_MS = 17000;
+        const PLAYLIST = [1, 2, 3];
+        
+        // --- STATE ---
+        const STATE = { IDLE: 0, LISTENING_RECALL: 1, DIFFUSING: 2, LISTENING_DESC: 3, PLAYING_AUDIO: 4, GENERATING: 5, REVEAL: 6, VIEWING: 7, REFLECTION: 8, END: 9 };
+        let currentState = STATE.IDLE;
+        let roundIndex = 0;
+        let currentCategory = 0;
+        let serialWriter;
+        let currentAudio = null;
+        let recognition;
+        let countdownInterval;
+        let associationInterval;
+        let userVocabulary = []; 
+        let reflectionTimeout = null;
+        let reflectionEntries = [];
+
+        // --- PARTICLE / HAND TRACKING STATE ---
+        const PARTICLE_MAX_PARTICLES = 5500;
+        const CANVAS_PARTICLE_CONFIG = {
+            gap: 6,
+            particleSize: 1.9,
+            returnSpeed: 0.045,
+            friction: 0.86,
+            pointerRadius: 160,
+            pointerForce: 0.28,
+            scatterDrift: 0.18
+        };
+        const PARTICLE_SCATTER_DURATION_MS = 1800;
+        const PRE_FINAL_SCATTER_DURATION_MS = 2600;
+        const PRE_FINAL_RETURN_SPEED = 0.016;
+        const PRE_FINAL_SCATTER_DRIFT = 0.12;
+        const PRE_FINAL_GATHER_RAMP_MS = 2800;
+        const PRE_FINAL_GATHER_EASE_CAP = 0.6;
+        const FINAL_MEMORY_SCATTER_DURATION_MS = 3600;
+        const FINAL_MEMORY_RETURN_SPEED = 0.022;
+        const FINAL_MEMORY_SCATTER_DRIFT = 0.16;
+        const FINAL_MEMORY_GATHER_RAMP_MS = 3200;
+        const FINAL_MEMORY_POST_SELECTION_WAIT_MS = 11800;
+        const POINT_CLOUD_STYLE = {
+            arcCenterDeg: -48,
+            arcWidthDeg: 108,
+            arcBoost: 2.4,
+            arcFeather: 0.55,
+            edgePushBase: 4.6,
+            edgePushArcExtra: 3.4,
+            edgeNoiseZ: 3.6,
+            edgeCullOutsideArc: 0.52,
+            swirlStrength: 0.34,
+            coreDim: 0.82,
+            edgeBrighten: 1.12,
+            edgeFadeBase: 0.64,
+            edgeFadeArc: 1.28
+        };
+        let particleStageEl;
+        let particleCanvas;
+        let particleCtx;
+        let particleAnimationId;
+        let particleActive = false;
+        let particleGathering = false;
+        let particleGatherTimer = null;
+        let particleShouldGather = false;
+        let particleGatherStartTs = null;
+        let particleCurrentReturnSpeed = CANVAS_PARTICLE_CONFIG.returnSpeed;
+        let particleCurrentScatterDrift = CANVAS_PARTICLE_CONFIG.scatterDrift;
+        let particleCurrentScatterDuration = PARTICLE_SCATTER_DURATION_MS;
+        let particleCurrentGatherRamp = FINAL_MEMORY_GATHER_RAMP_MS;
+        let particleGatherEaseCap = 1;
+        let particles = [];
+        let particlePalette = 'rgba(255,255,255,0.7)';
+        const offscreenCanvas = document.createElement('canvas');
+        const offscreenCtx = offscreenCanvas.getContext('2d');
+        const pointerState = { x: -1000, y: -1000, active: false };
+        let pointerListenersAttached = false;
+        let memoryHeadingHideTimer = null;
+        let memoryHeadingImageActive = false;
+        let memoryHeadingAutoHideTimer = null;
+        let aiDotResetTimer = null;
+        let aiDotDisplayTimer = null;
+        const PARTICLE_CANVAS_BASE_FILTER = 'saturate(1.25)';
+
+        // --- SPEECH ENGINE ---
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        recognition = new SpeechRecognition();
+        recognition.continuous = true; 
+        recognition.interimResults = true;
+        recognition.lang = 'en-US';
+
+        // --- RESTORED RESET FUNCTION ---
+        function resetSystem() { 
+            location.reload(); 
+        }
+        
+        // --- MAIN FLOW ---
+
+        async function startExperience() {
+            if(audioCtx.state === 'suspended') audioCtx.resume();
+            if (!serialWriter) await connectSerial();
+            try { recognition.start(); } catch(e) {}
+            if (currentState === STATE.IDLE) {
+                roundIndex = 0;
+                initiateRound();
+            }
+        }
+
+        function initiateRound() {
+            if (roundIndex >= PLAYLIST.length) {
+                triggerReflectionPhase();
+                return;
+            }
+            clearReflectionTimer();
+            currentCategory = PLAYLIST[roundIndex];
+            userVocabulary = []; 
+            resetVisualsForNextRound();
+            triggerRecallPhase(); 
+        }
+
+        function clearReflectionTimer() {
+            if (reflectionTimeout) {
+                clearTimeout(reflectionTimeout);
+                reflectionTimeout = null;
+            }
+        }
+
+        function triggerReflectionPhase() {
+            clearReflectionTimer();
+            currentState = STATE.REFLECTION;
+            stopAssociations();
+            if (countdownInterval) {
+                clearInterval(countdownInterval);
+                countdownInterval = null;
+            }
+            if (currentAudio) fadeAudioOut();
+            document.body.classList.remove('viewing-mode');
+            hideMemoryHeading();
+            const consoleEl = document.getElementById('console');
+            consoleEl.style.opacity = 1;
+            consoleEl.style.pointerEvents = 'auto';
+            const promptBox = document.getElementById('transcript-box');
+            promptBox.innerText = "";
+            const agent = document.getElementById('ai-agent');
+            agent.className = 'ai-dot listening';
+            setPrompt("HERE IS YOUR MEMORY. WHAT DO YOU THINK?");
+            const container = document.getElementById('image-container');
+            if (container) {
+                container.classList.add('hidden');
+                container.style.pointerEvents = 'none';
+                container.style.opacity = 0;
+            }
+            reflectionEntries = [];
+            reflectionTimeout = setTimeout(() => {
+                if (currentState === STATE.REFLECTION) {
+                    endExperience();
+                }
+            }, REFLECTION_WAIT_MS);
+        }
+
+        function triggerRecallPhase() {
+            currentState = STATE.LISTENING_RECALL;
+            document.getElementById('transcript-box').innerText = "";
+            document.getElementById('ai-agent').className = 'ai-dot listening';
+            startCountdown(RECALL_WAIT_MS, `ROUND ${roundIndex + 1}: RECALL THE MEMORY...`, () => {
+                triggerScentPhase();
+            });
+        }
+
+        function triggerScentPhase() {
+            currentState = STATE.DIFFUSING;
+            if (serialWriter) {
+                const encoder = new TextEncoder();
+                serialWriter.write(encoder.encode(currentCategory.toString()));
+            }
+            startCountdown(SCENT_WAIT_MS, "RELEASING SCENT...", () => {
+                triggerDescriptionPhase();
+            });
+        }
+
+        function triggerDescriptionPhase() {
+            currentState = STATE.LISTENING_DESC;
+            setPrompt("WHAT DO YOU SMELL?");
+            document.getElementById('ai-agent').className = 'ai-dot listening';
+            spawnAssociations(); 
+            setTimeout(triggerAudioPhase, 13000);
+        }
+
+        function triggerAudioPhase() {
+            currentState = STATE.PLAYING_AUDIO;
+            setPrompt("Does it SOUND like this...");
+            document.getElementById('transcript-box').innerText = "";
+            document.getElementById('ai-agent').className = 'ai-dot playing';
+            const audioFile = MEMORY_ASSETS[currentCategory].audio;
+            playAudio(audioFile, 0.8);
+            setTimeout(triggerGenerationPhase, 15000);
+        }
+
+        function triggerGenerationPhase() {
+            currentState = STATE.GENERATING;
+            document.getElementById('ai-agent').className = 'ai-dot listening';
+            startCountdown(GEN_WAIT_MS, "GENERATING VISUALS...", () => {
+                stopAssociations();
+                triggerRevealPhase();
+            });
+        }
+
+        function triggerRevealPhase() {
+            currentState = STATE.REVEAL;
+            const asset = MEMORY_ASSETS[currentCategory] || {};
+            const layout = asset.layout || 'pair';
+            const promptText = layout === 'single' ? (asset.prompt || 'YOUR MEMORY') : 'SELECT THE MEMORY';
+            const glowColor = asset.glowColor;
+            const imgA = asset.a || '';
+            const imgB = asset.b || '';
+            const hasImagery = Boolean(imgA || imgB);
+            setPrompt(hasImagery ? '' : promptText);
+            document.getElementById('transcript-box').innerText = "";
+            document.body.classList.add('viewing-mode');
+            flashAIDot({ displayMs: 2000 });
+            if (hasImagery) {
+                memoryHeadingImageActive = true;
+                updateMemoryHeadingPlacement();
+                const headingAutoHide = (promptText || '').toUpperCase().includes('THIS IS YOUR MEMORY') ? 2000 : 4200;
+                showMemoryHeading(promptText, { autoHideMs: headingAutoHide });
+            } else {
+                hideMemoryHeading();
+            }
+            const elA = document.getElementById('choice-a');
+            const elB = document.getElementById('choice-b');
+
+            [elA, elB].forEach(el => {
+                stopCardParticlePreview(el);
+                clearCardInlineStyles(el);
+                el.className = 'memory-card';
+                if (glowColor) {
+                    el.style.setProperty('--particle-color', glowColor);
+                } else {
+                    el.style.removeProperty('--particle-color');
+                }
+                el.classList.remove('reveal-left', 'reveal-right', 'reveal-single', 'selected');
+            });
+
+            const shapes = asset.shapes || {};
+            applyCardShape(elA, shapes.a);
+            applyCardShape(elB, shapes.b);
+
+            elA.dataset.src = imgA;
+            elB.dataset.src = imgB;
+
+            startCardParticlePreview(elA, imgA, glowColor);
+
+            const container = document.getElementById('image-container');
+            container.style.pointerEvents = 'auto';
+
+            if (layout === 'single' || !imgB) {
+                stopCardParticlePreview(elB);
+                elB.className = 'memory-card';
+                applyCardShape(elB, shapes.b);
+                elB.classList.add('hidden');
+                elB.style.display = 'none';
+                elB.style.pointerEvents = 'none';
+                setTimeout(() => {
+                    elA.classList.add('reveal-single');
+                }, 100);
+            } else {
+                elB.classList.remove('hidden');
+                elB.style.display = '';
+                elB.style.pointerEvents = '';
+                startCardParticlePreview(elB, imgB, glowColor);
+                setTimeout(() => { elA.classList.add('reveal-left'); }, 100);
+                setTimeout(() => { elB.classList.add('reveal-right'); }, 600);
+            }
+        }
+
+        function finalizeMemory(variant) {
+            if (currentState !== STATE.REVEAL) return;
+            currentState = STATE.VIEWING;
+            document.body.classList.add('viewing-mode');
+            const container = document.getElementById('image-container');
+            const selected = document.getElementById(`choice-${variant}`);
+            const other = document.getElementById(variant === 'a' ? 'choice-b' : 'choice-a');
+            const asset = MEMORY_ASSETS[currentCategory];
+            const selectedSrc = selected?.dataset?.src || null;
+            const isFinalRound = roundIndex >= PLAYLIST.length - 1;
+            setPrompt("HOLD THE DATA");
+            container.style.pointerEvents = 'none';
+            other.style.opacity = 0;
+            other.style.pointerEvents = 'none';
+            other.classList.add('hidden');
+            selected.classList.remove('reveal-left', 'reveal-right');
+            selected.classList.add('selected');
+            stopCardParticlePreview(selected);
+            stopCardParticlePreview(other);
+            if (currentAudio) fadeAudioOut();
+            memoryHeadingImageActive = Boolean(selectedSrc);
+            updateMemoryHeadingPlacement();
+            const memoryHeadingText = asset?.prompt || 'THIS IS YOUR MEMORY';
+            const memoryHeadingAutoHide = memoryHeadingText.toUpperCase().includes('THIS IS YOUR MEMORY') ? 2000 : 0;
+            if (memoryHeadingAutoHide) {
+                showMemoryHeading(memoryHeadingText, { autoHideMs: memoryHeadingAutoHide });
+            } else {
+                showMemoryHeading(memoryHeadingText);
+            }
+            if (selectedSrc) {
+                startParticleExperience(selectedSrc, asset).catch(err => console.warn('Particle engine start failed:', err));
+            }
+            container.classList.add('hidden');
+            selected.classList.add('hidden');
+            const waitDuration = isFinalRound ? FINAL_MEMORY_POST_SELECTION_WAIT_MS : POST_SELECTION_WAIT_MS;
+            setTimeout(async () => {
+                await stopParticleExperience();
+                selected.style.opacity = 0;
+                setPrompt("PREPARING NEXT GENERATION...");
+                roundIndex++;
+                setTimeout(initiateRound, 800);
+            }, waitDuration);
+        }
+
+        function endExperience() {
+            clearReflectionTimer();
+            currentState = STATE.END;
+            document.body.classList.remove('viewing-mode');
+            hideMemoryHeading();
+            const consoleEl = document.getElementById('console');
+            const agent = document.getElementById('ai-agent');
+            if (consoleEl) {
+                consoleEl.style.opacity = 1;
+                consoleEl.style.pointerEvents = 'auto';
+            }
+            if (aiDotResetTimer) {
+                clearTimeout(aiDotResetTimer);
+                aiDotResetTimer = null;
+            }
+            if (agent) {
+                agent.style.transition = '';
+                agent.style.opacity = '';
+            }
+            document.getElementById('transcript-box').innerText = "";
+            const container = document.getElementById('image-container');
+            if (container) {
+                container.classList.add('hidden');
+                container.style.pointerEvents = 'none';
+                container.style.opacity = 0;
+            }
+            setPrompt("CYCLE COMPLETE", { force: true });
+            const dot = document.getElementById('ai-agent');
+            if (dot) dot.className = 'ai-dot';
+            if (serialWriter) {
+                const encoder = new TextEncoder();
+                serialWriter.write(encoder.encode("0"));
+            }
+            if(currentAudio) fadeAudioOut();
+        }
+
+        recognition.onresult = (event) => {
+            const lastIdx = event.results.length - 1;
+            const transcript = event.results[lastIdx][0].transcript;
+            if (currentState === STATE.GENERATING || currentState === STATE.REVEAL || currentState === STATE.VIEWING || currentState === STATE.END) {
+                return;
+            }
+            document.getElementById('transcript-box').innerText = `"${transcript}"`;
+            extractKeywords(transcript);
+            if (currentState === STATE.REFLECTION && event.results[lastIdx].isFinal) {
+                const clean = transcript.trim();
+                if (clean) {
+                    reflectionEntries.push(clean);
+                    console.log('Reflection noted:', clean);
+                }
+            }
+        };
+
+        function extractKeywords(text) {
+            const ignore = ['the','and','is','a','to','of','in','it','that','was','for','on','are','as','with','at','be','this','have','from','my','i','me','we'];
+            const words = text.toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g,"").split(" ");
+            words.forEach(w => {
+                if (w.length > 3 && !ignore.includes(w) && !userVocabulary.includes(w)) {
+                    userVocabulary.push(w);
+                }
+            });
+        }
+
+        recognition.onend = () => {
+            if (currentState !== STATE.END) {
+                try { recognition.start(); } catch(e) {}
+            }
+        };
+
+        function spawnAssociations() {
+            if(associationInterval) return;
+            associationInterval = setInterval(() => {
+                let word;
+                if(userVocabulary.length > 0) {
+                    word = userVocabulary[Math.floor(Math.random() * userVocabulary.length)];
+                } else {
+                    word = "LISTENING..."; 
+                }
+                const el = document.createElement('div');
+                el.innerText = word;
+                el.className = 'assoc-word';
+                const x = 50 + (Math.random() - 0.5) * 70; 
+                const y = 50 + (Math.random() - 0.5) * 60; 
+                el.style.left = x + '%'; el.style.top = y + '%';
+                document.getElementById('association-layer').appendChild(el);
+                setTimeout(() => el.remove(), 11000);
+            }, 800); 
+        }
+
+        function stopAssociations() {
+            clearInterval(associationInterval);
+            associationInterval = null;
+            document.getElementById('association-layer').innerHTML = '';
+        }
+
+        function ensureParticleLayer() {
+            if (particleCanvas) return;
+            particleStageEl = document.getElementById('particle-stage');
+            particleCanvas = document.getElementById('particle-canvas');
+            if (!particleStageEl || !particleCanvas) return;
+            particleCtx = particleCanvas.getContext('2d', { alpha: true });
+            resizeParticleCanvas();
+            window.addEventListener('resize', resizeParticleCanvas);
+            if (!pointerListenersAttached) {
+                particleStageEl.addEventListener('pointermove', handlePointerMove, { passive: true });
+                particleStageEl.addEventListener('pointerleave', handlePointerLeave, { passive: true });
+                particleStageEl.addEventListener('pointerdown', handlePointerMove, { passive: true });
+                particleStageEl.addEventListener('pointerup', handlePointerLeave, { passive: true });
+                pointerListenersAttached = true;
+            }
+        }
+
+        function handlePointerMove(event) {
+            if (!particleStageEl) return;
+            const rect = particleStageEl.getBoundingClientRect();
+            pointerState.x = event.clientX - rect.left;
+            pointerState.y = event.clientY - rect.top;
+            pointerState.active = true;
+        }
+
+        function handlePointerLeave() {
+            pointerState.x = -1000;
+            pointerState.y = -1000;
+            pointerState.active = false;
+        }
+
+        function flashAIDot(options = {}) {
+            const dot = document.getElementById('ai-agent');
+            if (!dot) return;
+            const displayMs = Math.max(0, options.displayMs ?? options.duration ?? 2000);
+            const fadeMs = Math.max(0, options.fadeMs ?? 600);
+            if (aiDotDisplayTimer) {
+                clearTimeout(aiDotDisplayTimer);
+                aiDotDisplayTimer = null;
+            }
+            if (aiDotResetTimer) {
+                clearTimeout(aiDotResetTimer);
+                aiDotResetTimer = null;
+            }
+            dot.style.transition = `opacity ${fadeMs / 1000}s ease`;
+            dot.style.opacity = 1;
+
+            const fadeOut = () => {
+                dot.style.opacity = 0;
+                aiDotResetTimer = setTimeout(() => {
+                    dot.style.transition = '';
+                    aiDotResetTimer = null;
+                }, fadeMs + 50);
+            };
+
+            if (displayMs === 0) {
+                fadeOut();
+                return;
+            }
+
+            aiDotDisplayTimer = setTimeout(() => {
+                aiDotDisplayTimer = null;
+                fadeOut();
+            }, displayMs);
+        }
+
+        function startCardParticlePreview(cardEl, imageSrc, glowColor) {
+            if (!cardEl) return;
+            stopCardParticlePreview(cardEl);
+            const statusEl = cardEl.querySelector('.memory-card-status');
+            cardEl.dataset.src = imageSrc || '';
+            if (glowColor) cardEl.dataset.glow = glowColor;
+            else delete cardEl.dataset.glow;
+            if (!imageSrc) {
+                cardEl.classList.add('error');
+                cardEl.style.backgroundImage = '';
+                if (statusEl) statusEl.innerText = 'MISSING IMAGE';
+                return;
+            }
+            if (statusEl) statusEl.innerText = 'LOADING...';
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => {
+                cardEl.classList.remove('error');
+                cardEl.style.backgroundImage = `url('${imageSrc}')`;
+                if (statusEl) statusEl.innerText = '';
+            };
+            img.onerror = () => {
+                cardEl.classList.add('error');
+                cardEl.style.backgroundImage = '';
+                if (statusEl) statusEl.innerText = 'MISSING IMAGE';
+            };
+            img.src = imageSrc;
+        }
+
+        function stopCardParticlePreview(cardEl) {
+            if (!cardEl) return;
+            cardEl.style.backgroundImage = '';
+            cardEl.classList.remove('error');
+            const statusEl = cardEl.querySelector('.memory-card-status');
+            if (statusEl) statusEl.innerText = '';
+        }
+
+        function resizeParticleCanvas() {
+            if (!particleStageEl || !particleCanvas || !particleCtx) return;
+            const rect = particleStageEl.getBoundingClientRect();
+            const width = rect.width || window.innerWidth || 1;
+            const height = rect.height || window.innerHeight || 1;
+            const dpr = window.devicePixelRatio || 1;
+            particleCanvas.width = width * dpr;
+            particleCanvas.height = height * dpr;
+            particleCanvas.style.width = width + 'px';
+            particleCanvas.style.height = height + 'px';
+            particleCtx.setTransform(1, 0, 0, 1, 0, 0);
+            particleCtx.scale(dpr, dpr);
+        }
+
+        function createParticlesFromImage(imageSrc) {
+            return new Promise((resolve) => {
+                if (!particleStageEl) {
+                    resolve();
+                    return;
+                }
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                img.onload = () => {
+                    const stageRect = particleStageEl.getBoundingClientRect();
+                    const width = stageRect.width || window.innerWidth || 1;
+                    const height = stageRect.height || window.innerHeight || 1;
+                    const scale = Math.min((width * 0.85) / img.width, (height * 0.85) / img.height);
+                    offscreenCanvas.width = img.width;
+                    offscreenCanvas.height = img.height;
+                    offscreenCtx.clearRect(0, 0, img.width, img.height);
+                    offscreenCtx.drawImage(img, 0, 0);
+                    const data = offscreenCtx.getImageData(0, 0, img.width, img.height).data;
+                    const sampled = [];
+                    const step = Math.max(CANVAS_PARTICLE_CONFIG.gap, Math.round(Math.max(img.width, img.height) / 160));
+                    for (let y = 0; y < img.height; y += step) {
+                        for (let x = 0; x < img.width; x += step) {
+                            const idx = (y * img.width + x) * 4;
+                            const alpha = data[idx + 3];
+                            if (alpha < 90) continue;
+                            const r = data[idx];
+                            const g = data[idx + 1];
+                            const b = data[idx + 2];
+                            const targetX = width / 2 + (x - img.width / 2) * scale;
+                            const targetY = height / 2 + (y - img.height / 2) * scale;
+                            sampled.push({
+                                x: Math.random() * width,
+                                y: Math.random() * height,
+                                originX: targetX,
+                                originY: targetY,
+                                vx: (Math.random() - 0.5) * 2.2,
+                                vy: (Math.random() - 0.5) * 2.2,
+                                color: `rgba(${r},${g},${b},${Math.min(0.95, alpha / 255 * 0.9)})`,
+                                size: CANVAS_PARTICLE_CONFIG.particleSize
+                            });
+                            if (sampled.length >= PARTICLE_MAX_PARTICLES) break;
+                        }
+                        if (sampled.length >= PARTICLE_MAX_PARTICLES) break;
+                    }
+                    particles = sampled;
+                    resolve();
+                };
+                img.onerror = () => {
+                    console.warn('Unable to load particle source image:', imageSrc);
+                    particles = [];
+                    resolve();
+                };
+                img.src = imageSrc;
+            });
+        }
+
+        async function startParticleExperience(imageSrc, asset) {
+            // Prefer Three.js point cloud if available
+            if (window.THREE) {
+                try {
+                    await startThreeExperience(imageSrc, asset);
+                    return;
+                } catch (err) {
+                    console.warn('Three.js experience failed, falling back to 2D canvas:', err);
+                }
+            }
+            // Fallback to 2D canvas particles
+            ensureParticleLayer();
+            if (!particleStageEl) return;
+            if (!particleCtx) {
+                particleCtx = document.getElementById('particle-canvas').getContext('2d', { alpha: true });
+            }
+            if (particleStageEl) {
+                particleStageEl.style.backgroundImage = '';
+                if (particleStageEl.dataset && particleStageEl.dataset.frozenBackground) {
+                    delete particleStageEl.dataset.frozenBackground;
+                }
+            }
+            if (particleCanvas) {
+                particleCanvas.style.opacity = 1;
+                particleCanvas.style.transition = '';
+                particleCanvas.style.filter = PARTICLE_CANVAS_BASE_FILTER;
+            }
+            particlePalette = asset?.particleColor || asset?.glowColor || 'rgba(255,255,255,0.85)';
+            particleStageEl.style.display = 'block';
+            particleStageEl.style.pointerEvents = 'auto';
+            resizeParticleCanvas();
+            await createParticlesFromImage(imageSrc);
+            if (!particles.length) {
+                particleStageEl.style.display = 'none';
+                particleStageEl.style.pointerEvents = 'none';
+                hideMemoryHeading();
+                return;
+            }
+            const isFinalMemory = roundIndex >= PLAYLIST.length - 1;
+            const isPreFinalMemory = roundIndex === PLAYLIST.length - 2;
+            if (isFinalMemory && particleCanvas) {
+                particleCanvas.style.transition = 'filter 3.4s ease';
+                particleCanvas.style.filter = `${PARTICLE_CANVAS_BASE_FILTER} brightness(0.08)`;
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        particleCanvas.style.filter = `${PARTICLE_CANVAS_BASE_FILTER} brightness(1)`;
+                    });
+                });
+            }
+            particleShouldGather = isFinalMemory || isPreFinalMemory;
+            particleGatherStartTs = null;
+            if (isFinalMemory) {
+                particleCurrentReturnSpeed = FINAL_MEMORY_RETURN_SPEED;
+                particleCurrentScatterDrift = FINAL_MEMORY_SCATTER_DRIFT;
+                particleCurrentScatterDuration = FINAL_MEMORY_SCATTER_DURATION_MS;
+                particleCurrentGatherRamp = FINAL_MEMORY_GATHER_RAMP_MS;
+                particleGatherEaseCap = 1;
+            } else if (isPreFinalMemory) {
+                particleCurrentReturnSpeed = PRE_FINAL_RETURN_SPEED;
+                particleCurrentScatterDrift = PRE_FINAL_SCATTER_DRIFT;
+                particleCurrentScatterDuration = PRE_FINAL_SCATTER_DURATION_MS;
+                particleCurrentGatherRamp = PRE_FINAL_GATHER_RAMP_MS;
+                particleGatherEaseCap = PRE_FINAL_GATHER_EASE_CAP;
+            } else {
+                particleCurrentReturnSpeed = CANVAS_PARTICLE_CONFIG.returnSpeed;
+                particleCurrentScatterDrift = CANVAS_PARTICLE_CONFIG.scatterDrift;
+                particleCurrentScatterDuration = PARTICLE_SCATTER_DURATION_MS;
+                particleCurrentGatherRamp = FINAL_MEMORY_GATHER_RAMP_MS;
+                particleGatherEaseCap = 1;
+            }
+            particleActive = true;
+            particleGathering = false;
+            if (particleGatherTimer) {
+                clearTimeout(particleGatherTimer);
+            }
+            if (particleShouldGather) {
+                particleGatherTimer = setTimeout(() => {
+                    particleGathering = true;
+                    particleGatherStartTs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+                }, particleCurrentScatterDuration);
+            } else {
+                particleGatherTimer = null;
+            }
+            if (particleAnimationId) cancelAnimationFrame(particleAnimationId);
+            particleAnimationId = requestAnimationFrame(animateParticles);
+        }
+
+        function animateParticles() {
+            if (!particleCtx || !particleActive) return;
+            const stageRect = particleStageEl.getBoundingClientRect();
+            const width = stageRect.width || window.innerWidth || 1;
+            const height = stageRect.height || window.innerHeight || 1;
+            particleCtx.clearRect(0, 0, width, height);
+            particleCtx.globalCompositeOperation = 'lighter';
+            const cfg = CANVAS_PARTICLE_CONFIG;
+            const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+            let gatherEase = 0;
+            let scatterAmount = particleCurrentScatterDrift;
+            let returnStrength = 0;
+            if (particleShouldGather && particleGathering) {
+                if (particleGatherStartTs !== null) {
+                    const ramp = particleCurrentGatherRamp || FINAL_MEMORY_GATHER_RAMP_MS;
+                    const progress = Math.min(1, Math.max(0, (now - particleGatherStartTs) / ramp));
+                    gatherEase = progress * progress * (3 - 2 * progress);
+                } else {
+                    gatherEase = 0.05;
+                }
+                if (typeof particleGatherEaseCap === 'number') {
+                    gatherEase = Math.min(gatherEase, particleGatherEaseCap);
+                }
+                returnStrength = particleCurrentReturnSpeed * gatherEase;
+                scatterAmount = particleCurrentScatterDrift * (1 - gatherEase * 0.85);
+            } else if (particleGathering) {
+                returnStrength = particleCurrentReturnSpeed;
+            }
+            if (scatterAmount < 0) scatterAmount = 0;
+            for (let i = 0; i < particles.length; i++) {
+                const p = particles[i];
+                const homeDx = (p.originX ?? p.x) - p.x;
+                const homeDy = (p.originY ?? p.y) - p.y;
+                if (returnStrength > 0) {
+                    p.vx += homeDx * returnStrength;
+                    p.vy += homeDy * returnStrength;
+                }
+                if (scatterAmount > 0) {
+                    p.vx += (Math.random() - 0.5) * scatterAmount;
+                    p.vy += (Math.random() - 0.5) * scatterAmount;
+                }
+
+                if (pointerState.active) {
+                    const dx = pointerState.x - p.x;
+                    const dy = pointerState.y - p.y;
+                    const dist = Math.hypot(dx, dy) || 0.0001;
+                    if (dist < cfg.pointerRadius) {
+                        const force = (cfg.pointerRadius - dist) / cfg.pointerRadius;
+                        const normX = dx / dist;
+                        const normY = dy / dist;
+                        p.vx -= normX * force * cfg.pointerForce;
+                        p.vy -= normY * force * cfg.pointerForce;
+                    }
+                }
+
+                p.vx *= cfg.friction;
+                p.vy *= cfg.friction;
+                p.x += p.vx;
+                p.y += p.vy;
+
+                particleCtx.fillStyle = p.color || particlePalette;
+                const size = p.size || cfg.particleSize;
+                particleCtx.fillRect(p.x, p.y, size, size);
+            }
+            particleCtx.globalCompositeOperation = 'source-over';
+            if (particleActive) {
+                particleAnimationId = requestAnimationFrame(animateParticles);
+            }
+        }
+
+        async function stopParticleExperience() {
+            particleActive = false;
+            particleGathering = false;
+            if (particleGatherTimer) {
+                clearTimeout(particleGatherTimer);
+                particleGatherTimer = null;
+            }
+            particleShouldGather = false;
+            particleGatherStartTs = null;
+            particleCurrentGatherRamp = FINAL_MEMORY_GATHER_RAMP_MS;
+            particleGatherEaseCap = 1;
+            if (particleAnimationId) {
+                cancelAnimationFrame(particleAnimationId);
+                particleAnimationId = null;
+            }
+            if (particleCtx && particleStageEl) {
+                const rect = particleStageEl.getBoundingClientRect();
+                particleCtx.clearRect(0, 0, rect.width || 0, rect.height || 0);
+            }
+            if (particleStageEl) {
+                particleStageEl.style.display = 'none';
+                particleStageEl.style.pointerEvents = 'none';
+            }
+            if (particleCanvas) {
+                particleCanvas.style.opacity = 1;
+                particleCanvas.style.transition = '';
+                particleCanvas.style.filter = PARTICLE_CANVAS_BASE_FILTER;
+            }
+            particles = [];
+            handlePointerLeave();
+            await stopThreeExperience();
+            hideMemoryHeading();
+        }
+
+        // ==============================
+        // Three.js Point Cloud Experience
+        // ==============================
+        let threeRenderer = null;
+        let threeScene = null;
+        let threeCamera = null;
+        let threeAnimationId = null;
+        let threePoints = null;
+        let threeEdgePoints = null;
+
+        async function startThreeExperience(imageSrc, asset) {
+            const stage = document.getElementById('particle-stage');
+            if (!stage) return;
+            // Ensure the stage is visible before measuring; otherwise width/height collapse to zero
+            stage.style.display = 'block';
+            let rect = stage.getBoundingClientRect();
+            if (!rect.width || !rect.height) {
+                // Force a reflow after toggling display
+                rect = { width: window.innerWidth || 1, height: window.innerHeight || 1 };
+            }
+            const stageWidth = rect.width || window.innerWidth || 1;
+            const stageHeight = rect.height || window.innerHeight || 1;
+            // Renderer
+            if (!threeRenderer) {
+                threeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+                threeRenderer.setPixelRatio(window.devicePixelRatio || 1);
+                stage.appendChild(threeRenderer.domElement);
+            }
+            threeRenderer.setSize(stageWidth, stageHeight);
+            // Scene & camera
+            threeScene = new THREE.Scene();
+            threeCamera = new THREE.PerspectiveCamera(45, stageWidth / stageHeight, 0.1, 1000);
+            threeCamera.position.set(0, 0, 65);
+            // Lights
+            const amb = new THREE.AmbientLight(0xffffff, 0.8);
+            threeScene.add(amb);
+            // Sample image into point cloud
+            const pointsData = await sampleImageToPoints(imageSrc, stageWidth, stageHeight);
+            // Core layer
+            const coreGeom = new THREE.BufferGeometry();
+            coreGeom.setAttribute('position', new THREE.Float32BufferAttribute(pointsData.core.positions, 3));
+            coreGeom.setAttribute('color', new THREE.Float32BufferAttribute(pointsData.core.colors, 3));
+            const coreMat = new THREE.PointsMaterial({ size: 0.9, vertexColors: true, transparent: true, opacity: 0.85, depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true });
+            threePoints = new THREE.Points(coreGeom, coreMat);
+            threeScene.add(threePoints);
+            // Edge layer (larger points, lower opacity, more dispersion)
+            const edgeGeom = new THREE.BufferGeometry();
+            edgeGeom.setAttribute('position', new THREE.Float32BufferAttribute(pointsData.edge.positions, 3));
+            edgeGeom.setAttribute('color', new THREE.Float32BufferAttribute(pointsData.edge.colors, 3));
+            const edgeMat = new THREE.PointsMaterial({ size: 1.6, vertexColors: true, transparent: true, opacity: 0.55, depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true });
+            threeEdgePoints = new THREE.Points(edgeGeom, edgeMat);
+            threeScene.add(threeEdgePoints);
+            // Simple float animation
+            const clock = new THREE.Clock();
+            function render() {
+                const t = clock.getElapsedTime();
+                if (threePoints) {
+                    threePoints.rotation.z = Math.sin(t * 0.1) * 0.03;
+                    threePoints.position.y = Math.sin(t * 0.28) * 0.7;
+                }
+                if (threeEdgePoints) {
+                    threeEdgePoints.rotation.z = Math.sin(t * 0.12) * 0.035;
+                    threeEdgePoints.position.y = Math.sin(t * 0.32) * 0.9;
+                }
+                threeRenderer.render(threeScene, threeCamera);
+                threeAnimationId = requestAnimationFrame(render);
+            }
+            render();
+            // Resize handling
+            if (!startThreeExperience._resizeHandler) {
+                startThreeExperience._resizeHandler = () => {
+                    const r = stage.getBoundingClientRect();
+                    if (!threeRenderer || !threeCamera) return;
+                    const w = r.width || window.innerWidth || 1;
+                    const h = r.height || window.innerHeight || 1;
+                    threeRenderer.setSize(w, h);
+                    threeCamera.aspect = w / h;
+                    threeCamera.updateProjectionMatrix();
+                };
+                window.addEventListener('resize', startThreeExperience._resizeHandler);
+            }
+        }
+
+        async function stopThreeExperience() {
+            if (threeAnimationId) {
+                cancelAnimationFrame(threeAnimationId);
+                threeAnimationId = null;
+            }
+            if (threePoints && threeScene) {
+                threeScene.remove(threePoints);
+            }
+            if (threeEdgePoints && threeScene) {
+                threeScene.remove(threeEdgePoints);
+            }
+            threePoints = null;
+            threeEdgePoints = null;
+            // Keep renderer attached for reuse; hide stage is handled elsewhere
+        }
+
+        function sampleImageToPoints(imageSrc, stageW, stageH) {
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                img.onload = () => {
+                    const oc = document.createElement('canvas');
+                    const ox = oc.getContext('2d');
+                    oc.width = img.width;
+                    oc.height = img.height;
+                    ox.drawImage(img, 0, 0);
+                    const data = ox.getImageData(0, 0, img.width, img.height).data;
+                    const corePos = [];
+                    const coreCol = [];
+                    const edgePos = [];
+                    const edgeCol = [];
+                    const maxDim = Math.max(img.width, img.height);
+                    const targetSize = Math.min(stageW, stageH) * 0.85;
+                    const scale = targetSize / maxDim;
+                    const style = POINT_CLOUD_STYLE;
+                    const cx = 0, cy = 0; // center at origin
+                    const maxPoints = 26000;
+                    let added = 0;
+                    const arcCenterDeg = style.arcCenterDeg || 0;
+                    const arcWidthDeg = Math.max(1, style.arcWidthDeg || 1);
+                    const arcFeather = Math.max(0.01, style.arcFeather || 1);
+                    const arcBoost = style.arcBoost || 1;
+                    const edgePushBase = style.edgePushBase || 0;
+                    const edgePushArcExtra = style.edgePushArcExtra || 0;
+                    const edgeCullOutsideArc = Math.min(Math.max(style.edgeCullOutsideArc ?? 0, 0), 1);
+                    const swirlStrength = style.swirlStrength || 0;
+                    const coreDim = style.coreDim ?? 1;
+                    const edgeBrighten = style.edgeBrighten ?? 1;
+                    const edgeFadeBase = style.edgeFadeBase ?? 1;
+                    const edgeFadeArc = style.edgeFadeArc ?? 1;
+                    const depthNoise = style.edgeNoiseZ ?? 0;
+                    // Random sampling to avoid grid/strips
+                    for (let i = 0; i < maxPoints * 2 && added < maxPoints; i++) {
+                        const rx = Math.floor(Math.random() * img.width);
+                        const ry = Math.floor(Math.random() * img.height);
+                        const idx = (ry * img.width + rx) * 4;
+                        const a = data[idx + 3];
+                        if (a < 90) continue;
+                        const r = data[idx] / 255;
+                        const g = data[idx + 1] / 255;
+                        const b = data[idx + 2] / 255;
+                        // Base position
+                        let px = ((rx - img.width / 2) * scale) + cx;
+                        let py = (-(ry - img.height / 2) * scale) + cy;
+                        // Jitter to break uniformity
+                        const jitter = 1.45;
+                        px += (Math.random() - 0.5) * jitter;
+                        py += (Math.random() - 0.5) * jitter;
+                        
+                        const nx = (rx / img.width) * 2 - 1;
+                        const ny = (ry / img.height) * 2 - 1;
+                        const rad = Math.sqrt(nx * nx + ny * ny);
+                        const edgeBias = Math.max(0, rad - 0.58);
+                        const angDeg = Math.atan2(ny, nx) * 180 / Math.PI;
+                        const delta = Math.abs((((angDeg - arcCenterDeg) % 360) + 540) % 360 - 180);
+                        const halfWidth = arcWidthDeg / 2;
+                        let arcFactor = 0;
+                        if (arcWidthDeg >= 360) {
+                            arcFactor = 1;
+                        } else if (halfWidth > 0) {
+                            const normalized = Math.min(1, delta / halfWidth);
+                            arcFactor = Math.max(0, 1 - Math.pow(normalized, arcFeather));
+                        }
+                        const arcMultiplier = 1 + arcFactor * (arcBoost - 1);
+                        if (edgeBias > 0.25 && arcFactor < 0.2 && Math.random() < edgeCullOutsideArc) {
+                            continue;
+                        }
+                        if (edgeBias > 0) {
+                            const dirx = nx / (rad + 1e-4);
+                            const diry = ny / (rad + 1e-4);
+                            const push = edgeBias * (edgePushBase + edgePushArcExtra * arcFactor) * scale;
+                            px += dirx * push;
+                            py -= diry * push;
+                            if (swirlStrength > 0) {
+                                const swirl = swirlStrength * arcFactor * edgeBias * targetSize * 0.01;
+                                const tangentX = -diry;
+                                const tangentY = dirx;
+                                px += tangentX * swirl;
+                                py += tangentY * swirl;
+                            }
+                        }
+                        const baseZ = (Math.random() - 0.5) * 1.4;
+                        const edgeZ = baseZ + (Math.random() - 0.5) * depthNoise * (0.4 + arcFactor);
+                        const coreZ = baseZ * 0.55;
+                        const isEdge = edgeBias > 0.05;
+                        if (isEdge) {
+                            const fadeBase = edgeFadeBase + edgeBias * 0.45;
+                            const fade = Math.min(1, fadeBase * (1 + arcFactor * (edgeFadeArc - 1)));
+                            const intensity = Math.min(1, edgeBrighten * fade * arcMultiplier);
+                            const br = Math.min(1, r * intensity);
+                            const bg = Math.min(1, g * intensity);
+                            const bb = Math.min(1, b * intensity);
+                            edgePos.push(px, py, edgeZ);
+                            edgeCol.push(br, bg, bb);
+                        } else {
+                            const lift = 1 + arcFactor * 0.12;
+                            const dr = Math.min(1, Math.max(0, r * coreDim * lift));
+                            const dg = Math.min(1, Math.max(0, g * coreDim * lift));
+                            const db = Math.min(1, Math.max(0, b * coreDim * lift));
+                            corePos.push(px, py, coreZ);
+                            coreCol.push(dr, dg, db);
+                        }
+                        added++;
+                    }
+                    resolve({ core: { positions: corePos, colors: coreCol }, edge: { positions: edgePos, colors: edgeCol } });
+                };
+                img.onerror = () => resolve({ core: { positions: [], colors: [] }, edge: { positions: [], colors: [] } });
+                img.src = imageSrc;
+            });
+        }
+
+        function startCountdown(duration, label, onComplete) {
+            let remaining = duration / 1000;
+            document.getElementById('ai-agent').className = 'ai-dot listening'; 
+            if (countdownInterval) clearInterval(countdownInterval);
+            setPrompt(`${label} (${remaining}s)`);
+            countdownInterval = setInterval(() => {
+                remaining--;
+                setPrompt(`${label} (${remaining}s)`);
+                if (remaining <= 0) {
+                    clearInterval(countdownInterval);
+                    onComplete();
+                }
+            }, 1000);
+        }
+
+        function clearCardInlineStyles(el) {
+            el.style.opacity = '';
+            el.style.transform = '';
+            el.style.border = '';
+            el.style.background = '';
+            el.style.backgroundImage = '';
+            el.style.boxShadow = '';
+            el.style.filter = '';
+            el.style.visibility = '';
+            el.style.display = '';
+            el.style.pointerEvents = '';
+        }
+
+        function applyCardShape(cardEl, shape) {
+            if (!cardEl) return;
+            if (shape === 'circle') {
+                cardEl.classList.add('circle-frame');
+            } else {
+                cardEl.classList.remove('circle-frame');
+            }
+        }
+
+        function resetVisualsForNextRound() {
+            clearReflectionTimer();
+            document.body.classList.remove('viewing-mode');
+            const consoleEl = document.getElementById('console');
+            const agent = document.getElementById('ai-agent');
+            if (consoleEl) {
+                consoleEl.style.opacity = 1;
+                consoleEl.style.pointerEvents = 'auto';
+            }
+            document.getElementById('transcript-box').innerText = "";
+            if (aiDotResetTimer) {
+                clearTimeout(aiDotResetTimer);
+                aiDotResetTimer = null;
+            }
+            if (agent) {
+                agent.style.transition = '';
+                agent.style.opacity = '';
+            }
+            hideMemoryHeading();
+            const container = document.getElementById('image-container');
+            container.classList.remove('hidden');
+            container.style.display = 'flex';
+            container.style.visibility = '';
+            container.style.opacity = 1;
+            container.style.pointerEvents = 'none';
+            setPrompt("PREPARING...");
+            ['choice-a', 'choice-b'].forEach(id => {
+                const el = document.getElementById(id);
+                el.className = 'memory-card';
+                clearCardInlineStyles(el);
+                stopCardParticlePreview(el);
+                el.dataset.src = '';
+                el.dataset.glow = '';
+                el.style.removeProperty('--particle-color');
+                el.hasAlerted = false;
+                el.classList.remove('reveal-left', 'reveal-right', 'reveal-single', 'selected', 'hidden');
+                el.style.display = '';
+            });
+        }
+
+        function setPrompt(text, options = {}) {
+            const el = document.getElementById('system-prompt');
+            if (!el) return;
+            const force = Boolean(options.force);
+            const isViewing = document.body.classList.contains('viewing-mode');
+            let message = text || '';
+            if (!force && isViewing) {
+                message = '';
+            }
+            el.innerText = message;
+            if (!message) {
+                el.style.color = 'rgba(255, 255, 255, 0.25)';
+            } else if (message.includes('RELEASING') || message.includes('GENERATING')) {
+                el.style.color = '#00aaff';
+            } else {
+                el.style.color = 'rgba(255, 255, 255, 0.4)';
+            }
+        }
+
+        function showMemoryHeading(text, options = {}) {
+            const heading = document.getElementById('memory-heading');
+            if (!heading) return;
+            if (!text) {
+                hideMemoryHeading();
+                return;
+            }
+            if (memoryHeadingHideTimer) {
+                clearTimeout(memoryHeadingHideTimer);
+                memoryHeadingHideTimer = null;
+            }
+            if (memoryHeadingAutoHideTimer) {
+                clearTimeout(memoryHeadingAutoHideTimer);
+                memoryHeadingAutoHideTimer = null;
+            }
+            heading.innerText = text;
+            heading.classList.remove('hidden');
+            requestAnimationFrame(() => {
+                heading.style.opacity = 1;
+            });
+            const autoHideMs = options.autoHideMs;
+            if (autoHideMs && autoHideMs > 0) {
+                memoryHeadingAutoHideTimer = setTimeout(() => {
+                    memoryHeadingAutoHideTimer = null;
+                    hideMemoryHeading();
+                }, autoHideMs);
+            }
+        }
+
+        function hideMemoryHeading() {
+            const heading = document.getElementById('memory-heading');
+            if (!heading) return;
+            heading.style.opacity = 0;
+            memoryHeadingImageActive = false;
+            updateMemoryHeadingPlacement();
+            if (memoryHeadingHideTimer) clearTimeout(memoryHeadingHideTimer);
+            if (memoryHeadingAutoHideTimer) {
+                clearTimeout(memoryHeadingAutoHideTimer);
+                memoryHeadingAutoHideTimer = null;
+            }
+            memoryHeadingHideTimer = setTimeout(() => {
+                heading.classList.add('hidden');
+                heading.innerText = '';
+            }, 400);
+        }
+
+        function updateMemoryHeadingPlacement() {
+            const heading = document.getElementById('memory-heading');
+            if (!heading) return;
+            if (memoryHeadingImageActive) {
+                document.body.classList.add('memory-has-image');
+                heading.style.top = '';
+                heading.style.bottom = '14vh';
+            } else {
+                document.body.classList.remove('memory-has-image');
+                heading.style.top = '12vh';
+                heading.style.bottom = '';
+            }
+        }
+
+        async function connectSerial() {
+            try {
+                const port = await navigator.serial.requestPort();
+                await port.open({ baudRate: 9600 });
+                serialWriter = port.writable.getWriter();
+            } catch (e) {}
+        }
+        
+        function fadeAudioOut() {
+            if (!currentAudio) return;
+            const audioRef = currentAudio;
+            let vol = audioRef.getVolume ? audioRef.getVolume() : 1;
+            const fade = setInterval(() => {
+                vol -= 0.05;
+                if (vol <= 0) {
+                    clearInterval(fade);
+                    if (audioRef.setVolume) audioRef.setVolume(0);
+                    if (audioRef.stop) audioRef.stop();
+                    if (currentAudio === audioRef) currentAudio = null;
+                } else {
+                    if (audioRef.setVolume) audioRef.setVolume(vol);
+                }
+            }, 100);
+        }
+
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const AUDIO_CACHE = new Map();
+
+        async function loadAudioBuffer(src) {
+            if (AUDIO_CACHE.has(src)) return AUDIO_CACHE.get(src);
+            const response = await fetch(src);
+            if (!response.ok) throw new Error(`Audio fetch failed: ${response.status}`);
+            const arrayBuffer = await response.arrayBuffer();
+            const buffer = await audioCtx.decodeAudioData(arrayBuffer);
+            AUDIO_CACHE.set(src, buffer);
+            return buffer;
+        }
+        
+        async function playAudio(filename, targetVol) {
+            if (currentAudio) fadeAudioOut();
+            if (audioCtx.state === 'suspended') {
+                try { await audioCtx.resume(); } catch (err) { console.warn('AudioContext resume blocked:', err); }
+            }
+            try {
+                const buffer = await loadAudioBuffer(filename);
+                const source = audioCtx.createBufferSource();
+                const gainNode = audioCtx.createGain();
+                gainNode.gain.value = 0;
+                source.buffer = buffer;
+                source.loop = true;
+                source.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+                source.start(0);
+                const player = {
+                    setVolume: (v) => {
+                        const value = Math.max(0, Math.min(1, v));
+                        gainNode.gain.setTargetAtTime(value, audioCtx.currentTime, 0.12);
+                        player._vol = value;
+                    },
+                    getVolume: () => player._vol ?? gainNode.gain.value,
+                    stop: () => {
+                        try { source.stop(); } catch (e) {}
+                        try { source.disconnect(); } catch (e) {}
+                        try { gainNode.disconnect(); } catch (e) {}
+                    },
+                    _vol: 0
+                };
+                player.setVolume(0);
+                currentAudio = player;
+                let vol = 0;
+                const fade = setInterval(() => {
+                    vol += 0.05;
+                    if (!currentAudio || currentAudio !== player) {
+                        clearInterval(fade);
+                        return;
+                    }
+                    if (vol >= targetVol) {
+                        player.setVolume(targetVol);
+                        clearInterval(fade);
+                    } else {
+                        player.setVolume(vol);
+                    }
+                }, 100);
+            } catch (err) {
+                console.log("Audio buffer load failed, falling back to HTML audio.", err);
+                const audioObj = new Audio(filename);
+                audioObj.loop = true;
+                audioObj.volume = 0; 
+                const player = {
+                    setVolume: (v) => { audioObj.volume = Math.max(0, Math.min(1, v)); },
+                    getVolume: () => audioObj.volume,
+                    stop: () => { audioObj.pause(); try { audioObj.currentTime = 0; } catch (e) {} }
+                };
+                currentAudio = player;
+                audioObj.onerror = () => {
+                    console.log("Audio file missing, using synth fallback.");
+                    if (currentAudio === player) currentAudio = null;
+                    playGeneratedSound();
+                };
+                audioObj.play().then(() => {
+                    let vol = 0;
+                    const fade = setInterval(() => { 
+                        vol += 0.05; 
+                        if (!currentAudio || currentAudio !== player) {
+                            clearInterval(fade);
+                            return;
+                        }
+                        if (vol >= targetVol) {
+                            clearInterval(fade);
+                            player.setVolume(targetVol);
+                        } else {
+                            player.setVolume(vol);
+                        }
+                    }, 100);
+                }).catch(e => console.log("User must click first to play audio"));
+            }
+        }
+
+        function playGeneratedSound() {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(120, audioCtx.currentTime); 
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            gain.gain.value = 0;
+            osc.start();
+            const player = {
+                setVolume: (v) => { gain.gain.setTargetAtTime(Math.max(0, Math.min(1, v)), audioCtx.currentTime, 0.12); },
+                getVolume: () => gain.gain.value,
+                stop: () => { try { osc.stop(); } catch (e) {} }
+            };
+            currentAudio = player;
+            player.setVolume(0.6);
+        }
+
+        function preloadMemoryAssets() {
+            Object.values(MEMORY_ASSETS).forEach(asset => {
+                ['a', 'b'].forEach(key => {
+                    const src = asset[key];
+                    if (!src) return;
+                    const preloadImage = new Image();
+                    preloadImage.src = src;
+                });
+                if (asset.audio) {
+                    loadAudioBuffer(asset.audio).catch(err => console.warn('Audio preload skipped:', err));
+                }
+            });
+        }
+
+        window.addEventListener('load', preloadMemoryAssets);
+    </script>
+</body>
+
+</html>
