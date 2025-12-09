@@ -90,12 +90,16 @@
         let currentCategory = 0;
         let serialWriter;
         let currentAudio = null;
-        let recognition;
+        let recognition = null;
+        let recognitionActive = false;
+        let recognitionRestartTimer = null;
         let countdownInterval;
         let associationInterval;
         let userVocabulary = []; 
         let reflectionTimeout = null;
         let reflectionEntries = [];
+        let transcriptEntries = [];
+        let interimTranscript = '';
 
         // --- PARTICLE / HAND TRACKING STATE ---
         const PARTICLE_MAX_PARTICLES = 5500;
@@ -163,10 +167,17 @@
 
         // --- SPEECH ENGINE ---
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        recognition = new SpeechRecognition();
-        recognition.continuous = true; 
-        recognition.interimResults = true;
-        recognition.lang = 'en-US';
+        if (typeof SpeechRecognition === 'function') {
+            recognition = new SpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = true;
+            recognition.lang = 'en-US';
+            recognition.addEventListener('result', handleRecognitionResult);
+            recognition.addEventListener('error', handleRecognitionError);
+            recognition.addEventListener('end', handleRecognitionEnd);
+        } else {
+            console.warn('Speech recognition not supported in this browser.');
+        }
 
         // --- RESTORED RESET FUNCTION ---
         function resetSystem() { 
@@ -178,7 +189,10 @@
         async function startExperience() {
             if(audioCtx.state === 'suspended') audioCtx.resume();
             if (!serialWriter) await connectSerial();
-            try { recognition.start(); } catch(e) {}
+            if (recognition && !recognitionActive) {
+                recognitionActive = true;
+                try { recognition.start(); } catch (e) { console.warn('Speech recognition start failed:', e); }
+            }
             if (currentState === STATE.IDLE) {
                 roundIndex = 0;
                 initiateRound();
@@ -218,8 +232,7 @@
             const consoleEl = document.getElementById('console');
             consoleEl.style.opacity = 1;
             consoleEl.style.pointerEvents = 'auto';
-            const promptBox = document.getElementById('transcript-box');
-            promptBox.innerText = "";
+            resetTranscript();
             const agent = document.getElementById('ai-agent');
             agent.className = 'ai-dot listening';
             setPrompt("HERE IS YOUR MEMORY. WHAT DO YOU THINK?");
@@ -239,7 +252,7 @@
 
         function triggerRecallPhase() {
             currentState = STATE.LISTENING_RECALL;
-            document.getElementById('transcript-box').innerText = "";
+            resetTranscript();
             document.getElementById('ai-agent').className = 'ai-dot listening';
             startCountdown(RECALL_WAIT_MS, `ROUND ${roundIndex + 1}: RECALL THE MEMORY...`, () => {
                 triggerScentPhase();
@@ -268,7 +281,7 @@
         function triggerAudioPhase() {
             currentState = STATE.PLAYING_AUDIO;
             setPrompt("Does it SOUND like this...");
-            document.getElementById('transcript-box').innerText = "";
+            resetTranscript();
             document.getElementById('ai-agent').className = 'ai-dot playing';
             const audioFile = MEMORY_ASSETS[currentCategory].audio;
             playAudio(audioFile, 0.8);
@@ -294,7 +307,7 @@
             const imgB = asset.b || '';
             const hasImagery = Boolean(imgA || imgB);
             setPrompt(hasImagery ? '' : promptText);
-            document.getElementById('transcript-box').innerText = "";
+            resetTranscript();
             document.body.classList.add('viewing-mode');
             flashAIDot({ displayMs: 2000 });
             if (hasImagery) {
@@ -399,6 +412,14 @@
         function endExperience() {
             clearReflectionTimer();
             currentState = STATE.END;
+            if (recognition && recognitionActive) {
+                recognitionActive = false;
+                if (recognitionRestartTimer) {
+                    clearTimeout(recognitionRestartTimer);
+                    recognitionRestartTimer = null;
+                }
+                try { recognition.stop(); } catch (e) { console.warn('Speech recognition stop failed:', e); }
+            }
             document.body.classList.remove('viewing-mode');
             hideMemoryHeading();
             const consoleEl = document.getElementById('console');
@@ -407,6 +428,7 @@
                 consoleEl.style.opacity = 1;
                 consoleEl.style.pointerEvents = 'auto';
             }
+            resetTranscript();
             if (aiDotResetTimer) {
                 clearTimeout(aiDotResetTimer);
                 aiDotResetTimer = null;
@@ -555,6 +577,97 @@
                 aiDotDisplayTimer = null;
                 fadeOut();
             }, displayMs);
+        }
+
+        const TRANSCRIPT_MAX_ENTRIES = 8;
+
+        function updateTranscriptDisplay() {
+            const box = document.getElementById('transcript-box');
+            if (!box) return;
+            const history = transcriptEntries.join('\n').trim();
+            const interim = interimTranscript.trim();
+            const parts = [];
+            if (history) parts.push(history);
+            if (interim) parts.push(interim);
+            box.innerText = parts.join(parts.length > 1 ? '\n' : '');
+        }
+
+        function resetTranscript(options = {}) {
+            const preserveHistory = Boolean(options.preserveHistory);
+            if (!preserveHistory) {
+                transcriptEntries = [];
+            }
+            interimTranscript = '';
+            updateTranscriptDisplay();
+        }
+
+        function addVocabularyFromText(text) {
+            if (!text) return;
+            const cleaned = text.toLowerCase().replace(/[^a-z0-9\s']/g, ' ');
+            cleaned.split(/\s+/).forEach(token => {
+                if (!token) return;
+                if (!userVocabulary.includes(token)) {
+                    userVocabulary.push(token);
+                }
+            });
+            if (currentState === STATE.REFLECTION) {
+                reflectionEntries.push(text);
+                if (reflectionEntries.length > TRANSCRIPT_MAX_ENTRIES) {
+                    reflectionEntries = reflectionEntries.slice(-TRANSCRIPT_MAX_ENTRIES);
+                }
+            }
+        }
+
+        function handleRecognitionResult(event) {
+            if (!event) return;
+            let latestInterim = '';
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const result = event.results[i];
+                if (!result || !result[0]) continue;
+                const transcript = result[0].transcript.trim();
+                if (!transcript) continue;
+                if (result.isFinal) {
+                    addVocabularyFromText(transcript);
+                    if (!transcriptEntries.length || transcriptEntries[transcriptEntries.length - 1] !== transcript) {
+                        transcriptEntries.push(transcript);
+                        if (transcriptEntries.length > TRANSCRIPT_MAX_ENTRIES) {
+                            transcriptEntries = transcriptEntries.slice(-TRANSCRIPT_MAX_ENTRIES);
+                        }
+                    }
+                    latestInterim = '';
+                } else {
+                    latestInterim = transcript;
+                }
+            }
+            interimTranscript = latestInterim;
+            updateTranscriptDisplay();
+        }
+
+        function handleRecognitionError(event) {
+            if (!event) return;
+            console.warn('Speech recognition error:', event.error || event);
+            if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+                recognitionActive = false;
+                if (recognitionRestartTimer) {
+                    clearTimeout(recognitionRestartTimer);
+                    recognitionRestartTimer = null;
+                }
+            }
+        }
+
+        function handleRecognitionEnd() {
+            if (!recognition || !recognitionActive) return;
+            if (currentState === STATE.END) return;
+            if (recognitionRestartTimer) {
+                clearTimeout(recognitionRestartTimer);
+            }
+            recognitionRestartTimer = setTimeout(() => {
+                recognitionRestartTimer = null;
+                if (!recognition || !recognitionActive || currentState === STATE.END) return;
+                try { recognition.start(); } catch (err) {
+                    console.warn('Speech recognition restart failed:', err);
+                }
+            }, 800);
         }
 
         function startCardParticlePreview(cardEl, imageSrc, glowColor) {
@@ -1115,7 +1228,7 @@
                 consoleEl.style.opacity = 1;
                 consoleEl.style.pointerEvents = 'auto';
             }
-            document.getElementById('transcript-box').innerText = "";
+            resetTranscript();
             if (aiDotResetTimer) {
                 clearTimeout(aiDotResetTimer);
                 aiDotResetTimer = null;
