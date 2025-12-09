@@ -123,6 +123,9 @@
         const FINAL_MEMORY_SCATTER_DRIFT = 0.16;
         const FINAL_MEMORY_GATHER_RAMP_MS = 3200;
         const FINAL_MEMORY_POST_SELECTION_WAIT_MS = 11800;
+        const FINAL_MEMORY_GATHER_EASE_CAP = 0.78;
+        const FINAL_MEMORY_MIN_SCATTER = 0.018;
+        const FINAL_MEMORY_JITTER = 0.0085;
         const POINT_CLOUD_STYLE = {
             arcCenterDeg: -48,
             arcWidthDeg: 108,
@@ -163,6 +166,9 @@
         let memoryHeadingAutoHideTimer = null;
         let aiDotResetTimer = null;
         let aiDotDisplayTimer = null;
+        let memoryHeadingActiveText = '';
+        let particleOverlayActive = false;
+        let particleIsFinalMemory = false;
         const PARTICLE_CANVAS_BASE_FILTER = 'saturate(1.25)';
 
         // --- SPEECH ENGINE ---
@@ -393,14 +399,18 @@
             memoryHeadingImageActive = Boolean(selectedSrc);
             updateMemoryHeadingPlacement();
             const memoryHeadingText = asset?.prompt || 'THIS IS YOUR MEMORY';
-            const memoryHeadingAutoHide = memoryHeadingText.toUpperCase().includes('THIS IS YOUR MEMORY') ? 2000 : 0;
+            const memoryHeadingAutoHide = memoryHeadingText.toUpperCase().includes('THIS IS YOUR MEMORY') ? 6000 : 0;
             if (memoryHeadingAutoHide) {
                 showMemoryHeading(memoryHeadingText, { autoHideMs: memoryHeadingAutoHide });
             } else {
                 showMemoryHeading(memoryHeadingText);
             }
             if (selectedSrc) {
-                startParticleExperience(selectedSrc, asset).catch(err => console.warn('Particle engine start failed:', err));
+                if (isFinalRound) {
+                    showFinalMemoryFade(selectedSrc, asset);
+                } else {
+                    startParticleExperience(selectedSrc, asset).catch(err => console.warn('Particle engine start failed:', err));
+                }
             }
             container.classList.add('hidden');
             selected.classList.add('hidden');
@@ -551,7 +561,7 @@
 
         function flashAIDot(options = {}) {
             const dot = document.getElementById('ai-agent');
-            if (!dot) return;
+            if (!dot || particleOverlayActive) return;
             const displayMs = Math.max(0, options.displayMs ?? options.duration ?? 2000);
             const fadeMs = Math.max(0, options.fadeMs ?? 600);
             if (aiDotDisplayTimer) {
@@ -782,7 +792,44 @@
             });
         }
 
+        function showFinalMemoryFade(imageSrc, asset) {
+            ensureParticleLayer();
+            if (!particleStageEl) return;
+            particleIsFinalMemory = false;
+            particleActive = false;
+            setParticleOverlayState(true);
+            if (particleAnimationId) {
+                cancelAnimationFrame(particleAnimationId);
+                particleAnimationId = null;
+            }
+            if (particleCtx && particleCanvas) {
+                const rect = particleStageEl.getBoundingClientRect();
+                particleCtx.clearRect(0, 0, rect.width || 0, rect.height || 0);
+            }
+            if (particleCanvas) {
+                particleCanvas.style.opacity = 0;
+                particleCanvas.style.transition = '';
+                particleCanvas.style.filter = PARTICLE_CANVAS_BASE_FILTER;
+            }
+            particleStageEl.style.display = 'block';
+            particleStageEl.style.pointerEvents = 'none';
+            particleStageEl.style.backgroundColor = '#000';
+            particleStageEl.style.backgroundImage = imageSrc ? `url('${imageSrc}')` : '';
+            particleStageEl.style.backgroundSize = 'cover';
+            particleStageEl.style.backgroundPosition = 'center';
+            particleStageEl.style.backgroundRepeat = 'no-repeat';
+            particleStageEl.style.transition = 'opacity 3.4s ease';
+            particleStageEl.style.opacity = 0;
+            requestAnimationFrame(() => {
+                particleStageEl.style.opacity = 1;
+            });
+        }
+
         async function startParticleExperience(imageSrc, asset) {
+            const isFinalMemory = roundIndex >= PLAYLIST.length - 1;
+            const isPreFinalMemory = roundIndex === PLAYLIST.length - 2;
+            particleIsFinalMemory = isFinalMemory;
+            setParticleOverlayState(true);
             // Prefer Three.js point cloud if available
             if (window.THREE) {
                 try {
@@ -794,7 +841,11 @@
             }
             // Fallback to 2D canvas particles
             ensureParticleLayer();
-            if (!particleStageEl) return;
+            if (!particleStageEl) {
+                setParticleOverlayState(false);
+                particleIsFinalMemory = false;
+                return;
+            }
             if (!particleCtx) {
                 particleCtx = document.getElementById('particle-canvas').getContext('2d', { alpha: true });
             }
@@ -805,9 +856,15 @@
                 }
             }
             if (particleCanvas) {
-                particleCanvas.style.opacity = 1;
-                particleCanvas.style.transition = '';
-                particleCanvas.style.filter = PARTICLE_CANVAS_BASE_FILTER;
+                if (isFinalMemory) {
+                    particleCanvas.style.opacity = 0;
+                    particleCanvas.style.transition = 'opacity 3.4s ease, filter 3.4s ease';
+                    particleCanvas.style.filter = `${PARTICLE_CANVAS_BASE_FILTER} brightness(0.08)`;
+                } else {
+                    particleCanvas.style.opacity = 1;
+                    particleCanvas.style.transition = '';
+                    particleCanvas.style.filter = PARTICLE_CANVAS_BASE_FILTER;
+                }
             }
             particlePalette = asset?.particleColor || asset?.glowColor || 'rgba(255,255,255,0.85)';
             particleStageEl.style.display = 'block';
@@ -818,17 +875,14 @@
                 particleStageEl.style.display = 'none';
                 particleStageEl.style.pointerEvents = 'none';
                 hideMemoryHeading();
+                setParticleOverlayState(false);
+                particleIsFinalMemory = false;
                 return;
             }
-            const isFinalMemory = roundIndex >= PLAYLIST.length - 1;
-            const isPreFinalMemory = roundIndex === PLAYLIST.length - 2;
-            if (isFinalMemory && particleCanvas) {
-                particleCanvas.style.transition = 'filter 3.4s ease';
-                particleCanvas.style.filter = `${PARTICLE_CANVAS_BASE_FILTER} brightness(0.08)`;
+            if (particleCanvas && isFinalMemory) {
                 requestAnimationFrame(() => {
-                    requestAnimationFrame(() => {
-                        particleCanvas.style.filter = `${PARTICLE_CANVAS_BASE_FILTER} brightness(1)`;
-                    });
+                    particleCanvas.style.opacity = 1;
+                    particleCanvas.style.filter = `${PARTICLE_CANVAS_BASE_FILTER} brightness(1)`;
                 });
             }
             particleShouldGather = isFinalMemory || isPreFinalMemory;
@@ -838,7 +892,7 @@
                 particleCurrentScatterDrift = FINAL_MEMORY_SCATTER_DRIFT;
                 particleCurrentScatterDuration = FINAL_MEMORY_SCATTER_DURATION_MS;
                 particleCurrentGatherRamp = FINAL_MEMORY_GATHER_RAMP_MS;
-                particleGatherEaseCap = 1;
+                particleGatherEaseCap = FINAL_MEMORY_GATHER_EASE_CAP;
             } else if (isPreFinalMemory) {
                 particleCurrentReturnSpeed = PRE_FINAL_RETURN_SPEED;
                 particleCurrentScatterDrift = PRE_FINAL_SCATTER_DRIFT;
@@ -906,9 +960,16 @@
                     p.vx += homeDx * returnStrength;
                     p.vy += homeDy * returnStrength;
                 }
+                if (particleIsFinalMemory) {
+                    scatterAmount = Math.max(scatterAmount, FINAL_MEMORY_MIN_SCATTER);
+                }
                 if (scatterAmount > 0) {
                     p.vx += (Math.random() - 0.5) * scatterAmount;
                     p.vy += (Math.random() - 0.5) * scatterAmount;
+                    if (particleIsFinalMemory) {
+                        p.vx += (Math.random() - 0.5) * FINAL_MEMORY_JITTER;
+                        p.vy += (Math.random() - 0.5) * FINAL_MEMORY_JITTER;
+                    }
                 }
 
                 if (pointerState.active) {
@@ -930,7 +991,11 @@
                 p.y += p.vy;
 
                 particleCtx.fillStyle = p.color || particlePalette;
-                const size = p.size || cfg.particleSize;
+                let size = p.size || cfg.particleSize;
+                if (particleIsFinalMemory) {
+                    const growEase = particleGathering ? Math.max(0.18, gatherEase) : 0.18;
+                    size *= 0.45 + growEase * 1.15;
+                }
                 particleCtx.fillRect(p.x, p.y, size, size);
             }
             particleCtx.globalCompositeOperation = 'source-over';
@@ -940,6 +1005,8 @@
         }
 
         async function stopParticleExperience() {
+            setParticleOverlayState(false);
+            particleIsFinalMemory = false;
             particleActive = false;
             particleGathering = false;
             if (particleGatherTimer) {
@@ -961,6 +1028,10 @@
             if (particleStageEl) {
                 particleStageEl.style.display = 'none';
                 particleStageEl.style.pointerEvents = 'none';
+                particleStageEl.style.backgroundImage = '';
+                particleStageEl.style.backgroundColor = '';
+                particleStageEl.style.opacity = '';
+                particleStageEl.style.transition = '';
             }
             if (particleCanvas) {
                 particleCanvas.style.opacity = 1;
@@ -985,7 +1056,11 @@
 
         async function startThreeExperience(imageSrc, asset) {
             const stage = document.getElementById('particle-stage');
-            if (!stage) return;
+            if (!stage) {
+                setParticleOverlayState(false);
+                particleIsFinalMemory = false;
+                return;
+            }
             // Ensure the stage is visible before measuring; otherwise width/height collapse to zero
             stage.style.display = 'block';
             let rect = stage.getBoundingClientRect();
@@ -1270,6 +1345,9 @@
             const force = Boolean(options.force);
             const isViewing = document.body.classList.contains('viewing-mode');
             let message = text || '';
+            if (message && message.toUpperCase().includes('THIS IS YOUR MEMORY')) {
+                message = '';
+            }
             if (!force && isViewing) {
                 message = '';
             }
@@ -1286,10 +1364,20 @@
         function showMemoryHeading(text, options = {}) {
             const heading = document.getElementById('memory-heading');
             if (!heading) return;
-            if (!text) {
+            const content = (text || '').trim();
+            if (!content) {
                 hideMemoryHeading();
                 return;
             }
+            const normalized = content.toUpperCase();
+            if (normalized === 'THIS IS YOUR MEMORY') {
+                if (!memoryHeadingImageActive) {
+                    memoryHeadingImageActive = true;
+                    updateMemoryHeadingPlacement();
+                }
+            }
+            const headingAlreadyVisible = !heading.classList.contains('hidden') && heading.style.opacity > 0.05;
+            const isSameActive = memoryHeadingActiveText === normalized && headingAlreadyVisible;
             if (memoryHeadingHideTimer) {
                 clearTimeout(memoryHeadingHideTimer);
                 memoryHeadingHideTimer = null;
@@ -1298,7 +1386,13 @@
                 clearTimeout(memoryHeadingAutoHideTimer);
                 memoryHeadingAutoHideTimer = null;
             }
-            heading.innerText = text;
+            if (!isSameActive) {
+                if (normalized === 'THIS IS YOUR MEMORY') {
+                    setPrompt('', { force: true });
+                }
+                memoryHeadingActiveText = normalized;
+                heading.innerText = content;
+            }
             heading.classList.remove('hidden');
             requestAnimationFrame(() => {
                 heading.style.opacity = 1;
@@ -1323,6 +1417,7 @@
                 clearTimeout(memoryHeadingAutoHideTimer);
                 memoryHeadingAutoHideTimer = null;
             }
+            memoryHeadingActiveText = '';
             memoryHeadingHideTimer = setTimeout(() => {
                 heading.classList.add('hidden');
                 heading.innerText = '';
@@ -1340,6 +1435,30 @@
                 document.body.classList.remove('memory-has-image');
                 heading.style.top = '12vh';
                 heading.style.bottom = '';
+            }
+        }
+
+        function setParticleOverlayState(active) {
+            if (particleOverlayActive === active) return;
+            particleOverlayActive = active;
+            const body = document.body;
+            if (body) {
+                body.classList.toggle('particles-active', active);
+            }
+            if (active) {
+                if (aiDotDisplayTimer) {
+                    clearTimeout(aiDotDisplayTimer);
+                    aiDotDisplayTimer = null;
+                }
+                if (aiDotResetTimer) {
+                    clearTimeout(aiDotResetTimer);
+                    aiDotResetTimer = null;
+                }
+            }
+            const dot = document.getElementById('ai-agent');
+            if (dot && !active) {
+                dot.style.opacity = '';
+                dot.style.transition = '';
             }
         }
 

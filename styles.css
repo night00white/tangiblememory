@@ -136,11 +136,11 @@ body.viewing-mode #console {
 
 /* THE DOT */
 .ai-dot {
-    width: 12px;
-    height: 12px;
+    width: 20px;
+    height: 20px;
     background: white;
     border-radius: 50%;
-    margin: 0 auto 40px auto;
+    margin: 0 auto 52px auto;
     cursor: pointer;
     transition: all 0.4s ease;
     box-shadow: 0 0 20px rgba(255,255,255,0.6);
@@ -156,7 +156,7 @@ body.viewing-mode #console {
 .ai-dot.listening {
     background: #00ffff;
     box-shadow: 0 0 60px #00ffff;
-    transform: scale(1.3);
+    transform: scale(1.15);
     animation: breathe 3s infinite ease-in-out;
 }
 
@@ -171,17 +171,29 @@ body.viewing-mode .ai-dot {
     pointer-events: none;
 }
 
+body.particles-active .ai-dot {
+    opacity: 0 !important;
+    pointer-events: none !important;
+}
+
 /* TEXT */
 #system-prompt {
+    position: fixed;
+    top: 28vh;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
     color: rgba(255, 255, 255, 0.4);
-    font-size: 10px;
-    letter-spacing: 4px;
+    font-size: 13px;
+    letter-spacing: 5px;
     text-transform: uppercase;
-    margin-bottom: 20px;
-    min-height: 20px;
+    margin-bottom: 0;
+    min-height: 28px;
     font-weight: bold;
     opacity: 1;
     transition: opacity 0.5s;
+    pointer-events: none;
+    z-index: 22;
 }
 
 #transcript-box {
